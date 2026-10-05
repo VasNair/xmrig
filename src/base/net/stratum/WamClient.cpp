@@ -46,25 +46,6 @@ static inline void WriteLE32(uint8_t* buf, uint32_t v) {
 }
 
 /**
- * SHA256d (double SHA256) helper for merkle root calculation.
- */
-static void SHA256d(const uint8_t* data, size_t len, uint8_t* out) {
-    uint8_t tmp[32];
-    sha256(data, len, tmp);
-    sha256(tmp, 32, out);
-}
-
-/**
- * Pair two 32-byte hashes and return their SHA256d.
- */
-static void SHA256dPair(const uint8_t* a, const uint8_t* b, uint8_t* out) {
-    uint8_t tmp[64];
-    std::memcpy(tmp, a, 32);
-    std::memcpy(tmp + 32, b, 32);
-    SHA256d(tmp, 64, out);
-}
-
-/**
  * Parse WAM stratum job and build the 80-byte Bitcoin header.
  *
  * WAM's mining.notify format (extended from Monero stratum):
@@ -79,16 +60,19 @@ static void SHA256dPair(const uint8_t* a, const uint8_t* b, uint8_t* out) {
  *   8: clean_jobs
  *   9: randomx_seed (hex, little-endian - WAM extension)
  *
- * The job builder reconstructs:
- *   1. coinbase = coinb1 | extranonce1 | extranonce2 | coinb2
- *   2. merkle root = SHA256d(coinbase), folded through merkle_branch
- *   3. 80-byte header:
- *      0-3:   version (LE)
- *      4-35:  prevhash (reversed to LE)
- *      36-67: merkle root
- *      68-71: ntime (LE)
- *      72-75: nbits (LE)
- *      76-79: nonce (filled per attempt)
+ * The job builder reconstructs an 80-byte Bitcoin header:
+ *   0-3:   version (LE)
+ *   4-35:  prevhash (reversed to LE)
+ *   36-67: merkle root (set to zero as placeholder)
+ *   68-71: ntime (LE)
+ *   72-75: nbits (LE)
+ *   76-79: nonce (filled per attempt)
+ *
+ * NOTE: The merkle root computation requires the full coinbase
+ * (coinb1 | extranonce1 | extranonce2 | coinb2), which is only
+ * known at work time. This implementation sets it to zero as a
+ * placeholder. Real deployment must integrate with the worker
+ * to compute the merkle root fresh for each extranonce2.
  */
 bool WamClient::parseJob(const rapidjson::Value& params, int* code)
 {
@@ -100,6 +84,7 @@ bool WamClient::parseJob(const rapidjson::Value& params, int* code)
 
     const char* job_id = params[0].GetString();
     if (!job_id) {
+        LOG(NOTICE, YELLOW("WAM job_id is not a string"));
         *code = PARSE_ERR_INVALID_JOB;
         return false;
     }
@@ -107,64 +92,15 @@ bool WamClient::parseJob(const rapidjson::Value& params, int* code)
     // Parse prevhash (big-endian block hash -> little-endian header format)
     const char* prevhash_hex = params[1].GetString();
     if (!prevhash_hex || std::strlen(prevhash_hex) != 64) {
+        LOG(NOTICE, YELLOW("WAM prevhash is not 64 hex chars"));
         *code = PARSE_ERR_INVALID_JOB;
         return false;
     }
     uint8_t prevhash_be[32];
     if (!Cvt::fromHex(prevhash_be, 32, prevhash_hex, 64)) {
+        LOG(NOTICE, YELLOW("WAM prevhash is not valid hex"));
         *code = PARSE_ERR_INVALID_JOB;
         return false;
-    }
-
-    // Parse coinbase halves
-    const char* coinb1_hex = params[2].GetString();
-    const char* coinb2_hex = params[3].GetString();
-    if (!coinb1_hex || !coinb2_hex) {
-        *code = PARSE_ERR_INVALID_JOB;
-        return false;
-    }
-
-    size_t coinb1_size = std::strlen(coinb1_hex);
-    size_t coinb2_size = std::strlen(coinb2_hex);
-    if (coinb1_size % 2 || coinb2_size % 2) {
-        *code = PARSE_ERR_INVALID_JOB;
-        return false;
-    }
-
-    uint8_t coinb1[256], coinb2[256];
-    if (!Cvt::fromHex(coinb1, 256, coinb1_hex, coinb1_size) ||
-        !Cvt::fromHex(coinb2, 256, coinb2_hex, coinb2_size)) {
-        *code = PARSE_ERR_INVALID_JOB;
-        return false;
-    }
-
-    // Parse merkle branch
-    const auto& branch = params[4];
-    if (!branch.IsArray()) {
-        *code = PARSE_ERR_INVALID_JOB;
-        return false;
-    }
-
-    std::vector<uint8_t*> merkle_nodes;
-    uint8_t merkle_data[32 * 64];  // Support up to 64 merkle nodes
-    size_t merkle_offset = 0;
-
-    for (rapidjson::SizeType i = 0; i < branch.Size(); ++i) {
-        const char* node_hex = branch[i].GetString();
-        if (!node_hex || std::strlen(node_hex) != 64) {
-            *code = PARSE_ERR_INVALID_JOB;
-            return false;
-        }
-        if (merkle_offset + 32 > sizeof(merkle_data)) {
-            *code = PARSE_ERR_INVALID_JOB;
-            return false;
-        }
-        if (!Cvt::fromHex(merkle_data + merkle_offset, 32, node_hex, 64)) {
-            *code = PARSE_ERR_INVALID_JOB;
-            return false;
-        }
-        merkle_nodes.push_back(merkle_data + merkle_offset);
-        merkle_offset += 32;
     }
 
     // Parse version, bits, ntime (all big-endian in the wire format)
@@ -175,6 +111,7 @@ bool WamClient::parseJob(const rapidjson::Value& params, int* code)
     if (!version_hex || std::strlen(version_hex) != 8 ||
         !bits_hex || std::strlen(bits_hex) != 8 ||
         !ntime_hex || std::strlen(ntime_hex) != 8) {
+        LOG(NOTICE, YELLOW("WAM version, bits, or ntime is not 8 hex chars"));
         *code = PARSE_ERR_INVALID_JOB;
         return false;
     }
@@ -183,10 +120,12 @@ bool WamClient::parseJob(const rapidjson::Value& params, int* code)
     if (!Cvt::fromHex(version_be, 4, version_hex, 8) ||
         !Cvt::fromHex(bits_be, 4, bits_hex, 8) ||
         !Cvt::fromHex(ntime_be, 4, ntime_hex, 8)) {
+        LOG(NOTICE, YELLOW("WAM version, bits, or ntime is not valid hex"));
         *code = PARSE_ERR_INVALID_JOB;
         return false;
     }
 
+    // Convert big-endian to native integers
     uint32_t version = (uint32_t(version_be[0]) << 24) | (uint32_t(version_be[1]) << 16) |
                        (uint32_t(version_be[2]) << 8) | uint32_t(version_be[3]);
     uint32_t bits = (uint32_t(bits_be[0]) << 24) | (uint32_t(bits_be[1]) << 16) |
@@ -200,17 +139,19 @@ bool WamClient::parseJob(const rapidjson::Value& params, int* code)
     // Parse RandomX seed (WAM extension, little-endian)
     const char* seed_hex = params[9].GetString();
     if (!seed_hex || std::strlen(seed_hex) != 64) {
+        LOG(NOTICE, YELLOW("WAM randomx_seed is not 64 hex chars"));
         *code = PARSE_ERR_INVALID_JOB;
         return false;
     }
 
     if (!setSeedHash(seed_hex)) {
+        LOG(NOTICE, YELLOW("WAM randomx_seed is not valid"));
         *code = PARSE_ERR_INVALID_JOB;
         return false;
     }
 
-    // Now build the 80-byte Bitcoin header.
-    // The workers will vary the nonce (bytes 76-79) and hash with RandomX.
+    // Build the 80-byte Bitcoin header.
+    // Workers will vary the nonce (bytes 76-79) and hash with RandomX.
 
     uint8_t header[80];
 
@@ -220,31 +161,10 @@ bool WamClient::parseJob(const rapidjson::Value& params, int* code)
     // 4-35: prevhash (reverse to little-endian header format)
     ReverseBytes(header + 4, prevhash_be, 32);
 
-    // 36-67: merkle root (compute from coinbase + branch)
-    {
-        // Reconstruct coinbase: coinb1 | extranonce1 | extranonce2 | coinb2
-        // For now, we build without extranonce because the job parser doesn't have it.
-        // The pool will send this in the job, and we use what we know.
-        // Actually, we need to compute this AFTER extranonce1 is known.
-        // For now, build the header with zero merkle (placeholder).
-        // The actual merkle root will be computed in the worker when extranonce is known.
-        //
-        // For WAM, the stratum server sends the header, not us computing it.
-        // So we DON'T compute the merkle root here. Instead, we trust that
-        // if the pool is sending mining.notify, it has already computed
-        // what the merkle root WOULD be with extranonce1+extranonce2.
-        //
-        // But wait: xmrig's job model is that the pool sends a blob/template,
-        // and the miner fills in the nonce. For WAM, the pool sends the header fields
-        // separately, and we assemble them.
-        //
-        // The merkle root MUST be computed fresh for each extranonce2, because
-        // extranonce2 changes the coinbase hash, which changes the merkle root.
-        //
-        // So the merkle computation MUST happen in the worker loop, not here.
-        // For now, set it to zero as a placeholder.
-        std::memset(header + 36, 0, 32);
-    }
+    // 36-67: merkle root
+    // NOTE: Setting to zero as placeholder. Real implementation must compute
+    // the merkle root from coinbase + branch when the worker has the extranonce.
+    std::memset(header + 36, 0, 32);
 
     // 68-71: ntime (little-endian)
     WriteLE32(header + 68, ntime);
@@ -255,14 +175,16 @@ bool WamClient::parseJob(const rapidjson::Value& params, int* code)
     // 76-79: nonce (start at 0, workers will increment)
     WriteLE32(header + 76, 0);
 
-    // Store the header in the job blob (80 bytes for WAM)
-    if (!m_job.setBlob(Cvt::toHex(header, 80).c_str())) {
+    // Store the 80-byte header in the job blob
+    const String headerHex = Cvt::toHex(header, 80);
+    if (!m_job.setBlob(headerHex.data())) {
+        LOG(NOTICE, YELLOW("WAM failed to set job blob"));
         *code = PARSE_ERR_INVALID_JOB;
         return false;
     }
 
     m_job.setId(job_id);
-    m_job.setHeight(0);  // Will be extracted from coinb1 if needed
+    m_job.setAlgorithm(Algorithm::RX_WAM);
 
     if (clean_jobs) {
         m_job.setDiff(m_diff);
