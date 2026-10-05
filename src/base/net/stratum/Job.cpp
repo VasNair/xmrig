@@ -24,424 +24,208 @@
  *   along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <cassert>
-#include <cstring>
+#ifndef XMRIG_JOB_H
+#define XMRIG_JOB_H
 
-#include "base/net/stratum/Job.h"
-#include "base/tools/Alignment.h"
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+#include "base/crypto/Algorithm.h"
 #include "base/tools/Buffer.h"
-#include "base/tools/Cvt.h"
-#include "base/tools/cryptonote/BlockTemplate.h"
-#include "base/tools/cryptonote/Signatures.h"
-#include "base/crypto/keccak.h"
+#include "base/tools/String.h"
 
 
-xmrig::Job::Job(bool nicehash, const Algorithm &algorithm, const String &clientId) :
-    m_algorithm(algorithm),
-    m_nicehash(nicehash),
-    m_clientId(clientId)
+namespace xmrig {
+
+
+class Job
 {
-}
+public:
+    // Max blob size is 84 (75 fixed + 9 variable), aligned to 96. https://github.com/xmrig/xmrig/issues/1 Thanks fireice-uk.
+    // SECOR increase requirements for blob size: https://github.com/xmrig/xmrig/issues/913
+    // Haven (XHV) offshore increases requirements by adding pricing_record struct (192 bytes) to block_header.
+    // Round it up to 408 (136*3) for a convenient keccak calculation in OpenCL
+    static constexpr const size_t kMaxBlobSize = 408;
+    static constexpr const size_t kMaxSeedSize = 32;
 
+    Job() = default;
+    Job(bool nicehash, const Algorithm &algorithm, const String &clientId);
 
-bool xmrig::Job::isEqual(const Job &other) const
-{
-    return m_id == other.m_id && m_clientId == other.m_clientId && isEqualBlob(other) && m_target == other.m_target;
-}
+    inline Job(const Job &other)        { copy(other); }
+    inline Job(Job &&other) noexcept    { move(std::move(other)); }
 
+    ~Job() = default;
 
-bool xmrig::Job::isEqualBlob(const Job &other) const
-{
-    return (m_size == other.m_size) && (memcmp(m_blob, other.m_blob, m_size) == 0);
-}
+    bool isEqual(const Job &other) const;
+    bool isEqualBlob(const Job &other) const;
+    bool setBlob(const char *blob);
+    bool setSeedHash(const char *hash);
+    bool setTarget(const char *target);
+    size_t nonceOffset() const;
+    void setDiff(uint64_t diff);
+    void setSigKey(const char *sig_key);
 
+    inline bool isNicehash() const                      { return m_nicehash; }
+    inline bool isValid() const                         { return (m_size > 0 && m_diff > 0) || !m_poolWallet.isEmpty(); }
+    inline bool setId(const char *id)                   { return (m_id = id); }
+    inline const Algorithm &algorithm() const           { return m_algorithm; }
+    inline const Buffer &seed() const                   { return m_seed; }
+    inline const String &clientId() const               { return m_clientId; }
+    inline const String &extraNonce() const             { return m_extraNonce; }
+    inline const String &id() const                     { return m_id; }
+    inline const String &poolWallet() const             { return m_poolWallet; }
+    inline const uint32_t *nonce() const                { return reinterpret_cast<const uint32_t*>(m_blob + nonceOffset()); }
+    inline const uint8_t *blob() const                  { return m_blob; }
+    inline size_t nonceSize() const                     { return (algorithm().family() == Algorithm::KAWPOW) ?  8 :  4; }
+    inline size_t size() const                          { return m_size; }
+    inline uint32_t *nonce()                            { return reinterpret_cast<uint32_t*>(m_blob + nonceOffset()); }
+    inline uint32_t backend() const                     { return m_backend; }
+    inline uint64_t diff() const                        { return m_diff; }
+    inline uint64_t height() const                      { return m_height; }
+    inline uint64_t nonceMask() const                   { return isNicehash() ? 0xFFFFFFULL : (nonceSize() == sizeof(uint64_t) ? (static_cast<uint64_t>(-1LL) >> (extraNonce().size() * 4)) : 0xFFFFULL); }
+    inline uint64_t target() const                      { return m_target; }
+    inline uint8_t *blob()                              { return m_blob; }
+    inline uint8_t fixedByte() const                    { return *(m_blob + 42); }
+    inline uint8_t index() const                        { return m_index; }
+    inline void reset()                                 { m_size = 0; m_diff = 0; }
+    inline void setAlgorithm(const Algorithm::Id id)    { m_algorithm = id; }
+    inline void setAlgorithm(const char *algo)          { m_algorithm = algo; }
+    inline void setBackend(uint32_t backend)            { m_backend = backend; }
+    inline void setClientId(const String &id)           { m_clientId = id; }
+    inline void setExtraNonce(const String &extraNonce) { m_extraNonce = extraNonce; }
+    inline void setHeight(uint64_t height)              { m_height = height; }
+    inline void setIndex(uint8_t index)                 { m_index = index; }
+    inline void setPoolWallet(const String &poolWallet) { m_poolWallet = poolWallet; }
 
-bool xmrig::Job::setBlob(const char *blob)
-{
-    if (!blob) {
-        return false;
+    inline void setWamData(const std::vector<std::vector<uint8_t>> &merkle_branch,
+                           const std::vector<uint8_t> &coinb1,
+                           const std::vector<uint8_t> &coinb2,
+                           const std::vector<uint8_t> &extranonce1,
+                           const std::vector<uint8_t> &extranonce2,
+                           size_t extranonce2_size)
+    {
+        m_wam_merkle_branch = merkle_branch;
+        m_wam_coinb1 = coinb1;
+        m_wam_coinb2 = coinb2;
+        m_wam_extranonce1 = extranonce1;
+        m_wam_extranonce2 = extranonce2;
+        m_wam_extranonce2_size = extranonce2_size;
     }
 
-    size_t size = strlen(blob);
-    if (size % 2 != 0) {
-        return false;
-    }
-
-    size /= 2;
-
-    const size_t minSize = nonceOffset() + nonceSize();
-    if (size < minSize || size >= sizeof(m_blob)) {
-        return false;
-    }
-
-    if (!Cvt::fromHex(m_blob, sizeof(m_blob), blob, size * 2)) {
-        return false;
-    }
-
-    if (readUnaligned(nonce()) != 0 && !m_nicehash) {
-        m_nicehash = true;
-    }
+    inline const std::vector<std::vector<uint8_t>> &wamMerkleBranch() const { return m_wam_merkle_branch; }
+    inline const std::vector<uint8_t> &wamCoinb1() const                     { return m_wam_coinb1; }
+    inline const std::vector<uint8_t> &wamCoinb2() const                     { return m_wam_coinb2; }
+    inline const std::vector<uint8_t> &wamExtranonce1() const                { return m_wam_extranonce1; }
+    inline const std::vector<uint8_t> &wamExtranonce2() const                { return m_wam_extranonce2; }
+    inline size_t wamExtranonce2Size() const                                 { return m_wam_extranonce2_size; }
 
 #   ifdef XMRIG_PROXY_PROJECT
-    memset(m_rawBlob, 0, sizeof(m_rawBlob));
-    memcpy(m_rawBlob, blob, size * 2);
+    inline char *rawBlob()                              { return m_rawBlob; }
+    inline const char *rawBlob() const                  { return m_rawBlob; }
+    inline const char *rawTarget() const                { return m_rawTarget; }
+    inline const String &rawSeedHash() const            { return m_rawSeedHash; }
+    inline const String &rawSigKey() const              { return m_rawSigKey; }
 #   endif
 
-    m_size = size;
-    return true;
-}
+    static inline uint64_t toDiff(uint64_t target)      { return target ? (0xFFFFFFFFFFFFFFFFULL / target) : 0; }
 
-
-bool xmrig::Job::setSeedHash(const char *hash)
-{
-    if (!hash || (strlen(hash) != kMaxSeedSize * 2)) {
-        return false;
-    }
-
-#   ifdef XMRIG_PROXY_PROJECT
-    m_rawSeedHash = hash;
-#   endif
-
-    m_seed = Cvt::fromHex(hash, kMaxSeedSize * 2);
-
-    return !m_seed.empty();
-}
-
-
-bool xmrig::Job::setTarget(const char *target)
-{
-    static auto parse = [](const char *target, size_t size, const Algorithm &algorithm) -> uint64_t {
-        if (algorithm == Algorithm::RX_YADA) {
-            return strtoull(target, nullptr, 16);
-        }
-
-        const auto raw = Cvt::fromHex(target, size);
-
-        switch (raw.size()) {
-        case 4:
-            return 0xFFFFFFFFFFFFFFFFULL / (0xFFFFFFFFULL / uint64_t(*reinterpret_cast<const uint32_t *>(raw.data())));
-
-        case 8:
-            return *reinterpret_cast<const uint64_t *>(raw.data());
-
-        default:
-            break;
-        }
-
-        return 0;
-    };
-
-    const size_t size = target ? strlen(target) : 0;
-
-    if (size < 4 || (m_target = parse(target, size, algorithm())) == 0) {
-        return false;
-    }
-
-    m_diff = toDiff(m_target);
-
-#   ifdef XMRIG_PROXY_PROJECT
-    if (size >= sizeof(m_rawTarget)) {
-        return false;
-    }
-
-    memset(m_rawTarget, 0, sizeof(m_rawTarget));
-    memcpy(m_rawTarget, target, size);
-#   endif
-
-    return true;
-}
-
-
-size_t xmrig::Job::nonceOffset() const
-{
-    switch (algorithm().family()) {
-    case Algorithm::RANDOM_X:
-        if (algorithm() == Algorithm::RX_WAM) {
-            return 76;
-        }
-        return 39;
-
-    case Algorithm::KAWPOW:
-        return 32;
-
-    case Algorithm::GHOSTRIDER:
-        return 76;
-
-    default:
-        break;
-    }
-
-    if (algorithm() == Algorithm::RX_WAM) {
-        return 76;
-    }
-
-    if (algorithm() == Algorithm::RX_YADA) {
-        return 147;
-    }
-
-    return 39;
-}
-
-
-void xmrig::Job::setDiff(uint64_t diff)
-{
-    m_diff   = diff;
-    m_target = toDiff(diff);
-
-#   ifdef XMRIG_PROXY_PROJECT
-    Cvt::toHex(m_rawTarget, sizeof(m_rawTarget), reinterpret_cast<uint8_t *>(&m_target), sizeof(m_target));
-#   endif
-}
-
-
-void xmrig::Job::setSigKey(const char *sig_key)
-{
-    constexpr const size_t size = 64;
-
-    if (!sig_key || strlen(sig_key) != size * 2) {
-        return;
-    }
-
-#   ifndef XMRIG_PROXY_PROJECT
-    const auto buf = Cvt::fromHex(sig_key, size * 2);
-    if (buf.size() == size) {
-        setEphemeralKeys(buf.data(), buf.data() + 32);
-    }
-#   else
-    m_rawSigKey = sig_key;
-#   endif
-}
-
-
-uint32_t xmrig::Job::getNumTransactions() const
-{
-    if (!(m_algorithm.isCN() || m_algorithm.family() == Algorithm::RANDOM_X)) {
-        return 0;
-    }
-
-    uint32_t num_transactions = 0;
-
-    // Monero (and some other coins) has the number of transactions encoded as varint in the end of hashing blob
-    const size_t expected_tx_offset = (m_algorithm == Algorithm::RX_WOW) ? 141 : 75;
-
-    if ((m_size > expected_tx_offset) && (m_size <= expected_tx_offset + 4)) {
-        for (size_t i = expected_tx_offset, k = 0; i < m_size; ++i, k += 7) {
-            const uint8_t b = m_blob[i];
-            num_transactions |= static_cast<uint32_t>(b & 0x7F) << k;
-            if ((b & 0x80) == 0) {
-                break;
-            }
-        }
-    }
-
-    return num_transactions;
-}
-
-
-void xmrig::Job::copy(const Job &other)
-{
-    m_algorithm  = other.m_algorithm;
-    m_nicehash   = other.m_nicehash;
-    m_size       = other.m_size;
-    m_clientId   = other.m_clientId;
-    m_id         = other.m_id;
-    m_backend    = other.m_backend;
-    m_diff       = other.m_diff;
-    m_height     = other.m_height;
-    m_target     = other.m_target;
-    m_index      = other.m_index;
-    m_seed       = other.m_seed;
-    m_extraNonce = other.m_extraNonce;
-    m_poolWallet = other.m_poolWallet;
-
-    memcpy(m_blob, other.m_blob, sizeof(m_blob));
-
-#   ifdef XMRIG_PROXY_PROJECT
-    m_rawSeedHash = other.m_rawSeedHash;
-    m_rawSigKey   = other.m_rawSigKey;
-
-    memcpy(m_rawBlob, other.m_rawBlob, sizeof(m_rawBlob));
-    memcpy(m_rawTarget, other.m_rawTarget, sizeof(m_rawTarget));
-#   endif
+    inline bool operator!=(const Job &other) const      { return !isEqual(other); }
+    inline bool operator==(const Job &other) const      { return isEqual(other); }
+    inline Job &operator=(const Job &other)             { if (this != &other) { copy(other); } return *this; }
+    inline Job &operator=(Job &&other) noexcept         { move(std::move(other)); return *this; }
 
 #   ifdef XMRIG_FEATURE_BENCHMARK
-    m_benchSize = other.m_benchSize;
+    inline uint32_t benchSize() const                   { return m_benchSize; }
+    inline void setBenchSize(uint32_t size)             { m_benchSize = size; }
 #   endif
 
 #   ifdef XMRIG_PROXY_PROJECT
-    memcpy(m_spendSecretKey, other.m_spendSecretKey, sizeof(m_spendSecretKey));
-    memcpy(m_viewSecretKey, other.m_viewSecretKey, sizeof(m_viewSecretKey));
-    memcpy(m_spendPublicKey, other.m_spendPublicKey, sizeof(m_spendPublicKey));
-    memcpy(m_viewPublicKey, other.m_viewPublicKey, sizeof(m_viewPublicKey));
-    m_minerTxPrefix = other.m_minerTxPrefix;
-    m_minerTxEphPubKeyOffset = other.m_minerTxEphPubKeyOffset;
-    m_minerTxPubKeyOffset = other.m_minerTxPubKeyOffset;
-    m_minerTxExtraNonceOffset = other.m_minerTxExtraNonceOffset;
-    m_minerTxExtraNonceSize = other.m_minerTxExtraNonceSize;
-    m_minerTxMerkleTreeBranch = other.m_minerTxMerkleTreeBranch;
-    m_minerTxMerkleTreePath = other.m_minerTxMerkleTreePath;
-    m_hasViewTag = other.m_hasViewTag;
+    inline bool hasViewTag() const                      { return m_hasViewTag; }
+
+    void setSpendSecretKey(const uint8_t* key);
+    void setMinerTx(const uint8_t* begin, const uint8_t* end, size_t minerTxEphPubKeyOffset, size_t minerTxPubKeyOffset, size_t minerTxExtraNonceOffset, size_t minerTxExtraNonceSize, const Buffer &minerTxMerkleTreeBranch, uint32_t minerTxMerkleTreePath, bool hasViewTag);
+    void setViewTagInMinerTx(uint8_t view_tag);
+    void setExtraNonceInMinerTx(uint32_t extra_nonce);
+    void generateSignatureData(String& signatureData, uint8_t& view_tag) const;
+    void generateHashingBlob(String& blob) const;
 #   else
-    memcpy(m_ephPublicKey, other.m_ephPublicKey, sizeof(m_ephPublicKey));
-    memcpy(m_ephSecretKey, other.m_ephSecretKey, sizeof(m_ephSecretKey));
-#   endif
+    inline const uint8_t* ephSecretKey() const { return m_hasMinerSignature ? m_ephSecretKey : nullptr; }
 
-    m_hasMinerSignature = other.m_hasMinerSignature;
-}
-
-
-void xmrig::Job::move(Job &&other)
-{
-    m_algorithm  = other.m_algorithm;
-    m_nicehash   = other.m_nicehash;
-    m_size       = other.m_size;
-    m_clientId   = std::move(other.m_clientId);
-    m_id         = std::move(other.m_id);
-    m_backend    = other.m_backend;
-    m_diff       = other.m_diff;
-    m_height     = other.m_height;
-    m_target     = other.m_target;
-    m_index      = other.m_index;
-    m_seed       = std::move(other.m_seed);
-    m_extraNonce = std::move(other.m_extraNonce);
-    m_poolWallet = std::move(other.m_poolWallet);
-
-    memcpy(m_blob, other.m_blob, sizeof(m_blob));
-
-    other.m_size        = 0;
-    other.m_diff        = 0;
-    other.m_algorithm   = Algorithm::INVALID;
-
-#   ifdef XMRIG_PROXY_PROJECT
-    m_rawSeedHash = std::move(other.m_rawSeedHash);
-    m_rawSigKey   = std::move(other.m_rawSigKey);
-
-    memcpy(m_rawBlob, other.m_rawBlob, sizeof(m_rawBlob));
-    memcpy(m_rawTarget, other.m_rawTarget, sizeof(m_rawTarget));
-#   endif
-
-#   ifdef XMRIG_FEATURE_BENCHMARK
-    m_benchSize = other.m_benchSize;
-#   endif
-
-#   ifdef XMRIG_PROXY_PROJECT
-    memcpy(m_spendSecretKey, other.m_spendSecretKey, sizeof(m_spendSecretKey));
-    memcpy(m_viewSecretKey, other.m_viewSecretKey, sizeof(m_viewSecretKey));
-    memcpy(m_spendPublicKey, other.m_spendPublicKey, sizeof(m_spendPublicKey));
-    memcpy(m_viewPublicKey, other.m_viewPublicKey, sizeof(m_viewPublicKey));
-
-    m_minerTxPrefix             = std::move(other.m_minerTxPrefix);
-    m_minerTxEphPubKeyOffset    = other.m_minerTxEphPubKeyOffset;
-    m_minerTxPubKeyOffset       = other.m_minerTxPubKeyOffset;
-    m_minerTxExtraNonceOffset   = other.m_minerTxExtraNonceOffset;
-    m_minerTxExtraNonceSize     = other.m_minerTxExtraNonceSize;
-    m_minerTxMerkleTreeBranch   = std::move(other.m_minerTxMerkleTreeBranch);
-    m_minerTxMerkleTreePath     = other.m_minerTxMerkleTreePath;
-    m_hasViewTag                = other.m_hasViewTag;
-#   else
-    memcpy(m_ephPublicKey, other.m_ephPublicKey, sizeof(m_ephPublicKey));
-    memcpy(m_ephSecretKey, other.m_ephSecretKey, sizeof(m_ephSecretKey));
-#   endif
-
-    m_hasMinerSignature = other.m_hasMinerSignature;
-}
-
-
-#ifdef XMRIG_PROXY_PROJECT
-
-
-void xmrig::Job::setSpendSecretKey(const uint8_t *key)
-{
-    m_hasMinerSignature = true;
-    memcpy(m_spendSecretKey, key, sizeof(m_spendSecretKey));
-
-    derive_view_secret_key(m_spendSecretKey, m_viewSecretKey);
-    secret_key_to_public_key(m_spendSecretKey, m_spendPublicKey);
-    secret_key_to_public_key(m_viewSecretKey, m_viewPublicKey);
-}
-
-
-void xmrig::Job::setMinerTx(const uint8_t *begin, const uint8_t *end, size_t minerTxEphPubKeyOffset, size_t minerTxPubKeyOffset, size_t minerTxExtraNonceOffset, size_t minerTxExtraNonceSize, const Buffer& minerTxMerkleTreeBranch, uint32_t minerTxMerkleTreePath, bool hasViewTag)
-{
-    m_minerTxPrefix.assign(begin, end);
-    m_minerTxEphPubKeyOffset    = minerTxEphPubKeyOffset;
-    m_minerTxPubKeyOffset       = minerTxPubKeyOffset;
-    m_minerTxExtraNonceOffset   = minerTxExtraNonceOffset;
-    m_minerTxExtraNonceSize     = minerTxExtraNonceSize;
-    m_minerTxMerkleTreeBranch   = minerTxMerkleTreeBranch;
-    m_minerTxMerkleTreePath     = minerTxMerkleTreePath;
-    m_hasViewTag                = hasViewTag;
-}
-
-
-void xmrig::Job::setViewTagInMinerTx(uint8_t view_tag)
-{
-    memcpy(m_minerTxPrefix.data() + m_minerTxEphPubKeyOffset + 32, &view_tag, 1);
-}
-
-
-void xmrig::Job::setExtraNonceInMinerTx(uint32_t extra_nonce)
-{
-    memcpy(m_minerTxPrefix.data() + m_minerTxExtraNonceOffset, &extra_nonce, std::min(m_minerTxExtraNonceSize, sizeof(uint32_t)));
-}
-
-
-void xmrig::Job::generateSignatureData(String &signatureData, uint8_t& view_tag) const
-{
-    uint8_t* eph_public_key = m_minerTxPrefix.data() + m_minerTxEphPubKeyOffset;
-    uint8_t* txkey_pub = m_minerTxPrefix.data() + m_minerTxPubKeyOffset;
-
-    uint8_t txkey_sec[32];
-
-    generate_keys(txkey_pub, txkey_sec);
-
-    uint8_t derivation[32];
-
-    generate_key_derivation(m_viewPublicKey, txkey_sec, derivation, &view_tag);
-    derive_public_key(derivation, 0, m_spendPublicKey, eph_public_key);
-
-    uint8_t buf[32 * 3] = {};
-    memcpy(buf, txkey_pub, 32);
-    memcpy(buf + 32, eph_public_key, 32);
-
-    generate_key_derivation(txkey_pub, m_viewSecretKey, derivation, nullptr);
-    derive_secret_key(derivation, 0, m_spendSecretKey, buf + 64);
-
-    signatureData = Cvt::toHex(buf, sizeof(buf));
-}
-
-void xmrig::Job::generateHashingBlob(String &blob) const
-{
-    uint8_t root_hash[32];
-    const uint8_t* p = m_minerTxPrefix.data();
-    BlockTemplate::calculateRootHash(p, p + m_minerTxPrefix.size(), m_minerTxMerkleTreeBranch, m_minerTxMerkleTreePath, root_hash);
-
-    uint64_t root_hash_offset = nonceOffset() + nonceSize();
-
-    if (m_hasMinerSignature) {
-        root_hash_offset += BlockTemplate::kSignatureSize + 2 /* vote */;
+    inline void setEphemeralKeys(const uint8_t *pub_key, const uint8_t *sec_key)
+    {
+        m_hasMinerSignature = true;
+        memcpy(m_ephPublicKey, pub_key, sizeof(m_ephSecretKey));
+        memcpy(m_ephSecretKey, sec_key, sizeof(m_ephSecretKey));
     }
 
-    blob = rawBlob();
-    Cvt::toHex(blob.data() + root_hash_offset * 2, 64, root_hash, BlockTemplate::kHashSize);
-}
+    void generateMinerSignature(const uint8_t* blob, size_t size, uint8_t* out_sig) const;
+#   endif
+
+    inline bool hasMinerSignature() const { return m_hasMinerSignature; }
+
+    uint32_t getNumTransactions() const;
+
+private:
+    void copy(const Job &other);
+    void move(Job &&other);
+
+    Algorithm m_algorithm;
+    bool m_nicehash     = false;
+    Buffer m_seed;
+    size_t m_size       = 0;
+    String m_clientId;
+    String m_extraNonce;
+    String m_id;
+    String m_poolWallet;
+    uint32_t m_backend  = 0;
+    uint64_t m_diff     = 0;
+    uint64_t m_height   = 0;
+    uint64_t m_target   = 0;
+    uint8_t m_blob[kMaxBlobSize]{ 0 };
+    uint8_t m_index     = 0;
+
+    std::vector<std::vector<uint8_t>> m_wam_merkle_branch;
+    std::vector<uint8_t> m_wam_coinb1;
+    std::vector<uint8_t> m_wam_coinb2;
+    std::vector<uint8_t> m_wam_extranonce1;
+    std::vector<uint8_t> m_wam_extranonce2;
+    size_t m_wam_extranonce2_size = 0;
+
+#   ifdef XMRIG_PROXY_PROJECT
+    char m_rawBlob[kMaxBlobSize * 2 + 8]{};
+    char m_rawTarget[24]{};
+    String m_rawSeedHash;
+    String m_rawSigKey;
+
+    // Miner signatures
+    uint8_t m_spendSecretKey[32]{};
+    uint8_t m_viewSecretKey[32]{};
+    uint8_t m_spendPublicKey[32]{};
+    uint8_t m_viewPublicKey[32]{};
+    mutable Buffer m_minerTxPrefix;
+    size_t m_minerTxEphPubKeyOffset = 0;
+    size_t m_minerTxPubKeyOffset = 0;
+    size_t m_minerTxExtraNonceOffset = 0;
+    size_t m_minerTxExtraNonceSize = 0;
+    Buffer m_minerTxMerkleTreeBranch;
+    uint32_t m_minerTxMerkleTreePath = 0;
+    bool m_hasViewTag = false;
+#   else
+    // Miner signatures
+    uint8_t m_ephPublicKey[32]{};
+    uint8_t m_ephSecretKey[32]{};
+#   endif
+
+    bool m_hasMinerSignature = false;
+
+#   ifdef XMRIG_FEATURE_BENCHMARK
+    uint32_t m_benchSize = 0;
+#   endif
+};
 
 
-#else
+} /* namespace xmrig */
 
 
-void xmrig::Job::generateMinerSignature(const uint8_t* blob, size_t size, uint8_t* out_sig) const
-{
-    uint8_t tmp[kMaxBlobSize];
-    memcpy(tmp, blob, size);
-
-    // Fill signature with zeros
-    memset(tmp + nonceOffset() + nonceSize(), 0, BlockTemplate::kSignatureSize);
-
-    uint8_t prefix_hash[32];
-    xmrig::keccak(tmp, static_cast<int>(size), prefix_hash, sizeof(prefix_hash));
-    xmrig::generate_signature(prefix_hash, m_ephPublicKey, m_ephSecretKey, out_sig);
-}
-
-
-#endif
+#endif /* XMRIG_JOB_H */
