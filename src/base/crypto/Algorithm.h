@@ -50,7 +50,7 @@ public:
         CN_2            = 0x63150200,   // "cn/2"             CryptoNight variant 2.
         CN_R            = 0x63150272,   // "cn/r"             CryptoNightR (Monero's variant 4).
         CN_FAST         = 0x63150166,   // "cn/fast"          CryptoNight variant 1 with half iterations.
-        CN_HALF         = 0x63150268,   // "cn/half"          CryptoNight variant 2 with half iterations (Masari/Torque).
+        CN_HALF         = 0x63150268,   // "cn/half"          CryptoNight variant 2 with half iterations.
         CN_XAO          = 0x63150078,   // "cn/xao"           CryptoNight variant 0 (modified, Alloy only).
         CN_RTO          = 0x63150172,   // "cn/rto"           CryptoNight variant 1 (modified, Arto only).
         CN_RWZ          = 0x63150277,   // "cn/rwz"           CryptoNight variant 2 with 3/4 iterations and reversed shuffle operation (Graft).
@@ -79,6 +79,7 @@ public:
         RX_GRAFT        = 0x72151267,   // "rx/graft"         RandomGRAFT (Graft).
         RX_SFX          = 0x72151273,   // "rx/sfx"           RandomSFX (Safex Cash).
         RX_YADA         = 0x72151279,   // "rx/yada"          RandomYada (YadaCoin).
+        RX_WAM          = 0x72151277,   // "rx/wam"           RandomX variant for WAM Coin.
         AR2_CHUKWA      = 0x61130000,   // "argon2/chukwa"    Argon2id (Chukwa).
         AR2_CHUKWA_V2   = 0x61140000,   // "argon2/chukwav2"  Argon2id (Chukwa v2).
         AR2_WRKZ        = 0x61120000,   // "argon2/wrkz"      Argon2id (WRKZ)
@@ -146,6 +147,7 @@ public:
     static const char *kRX_GRAFT;
     static const char *kRX_SFX;
     static const char *kRX_YADA;
+    static const char *kRX_WAM;
 #   endif
 
 #   ifdef XMRIG_ALGO_ARGON2
