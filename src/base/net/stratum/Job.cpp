@@ -7,8 +7,8 @@
  * Copyright 2017-2018 XMR-Stak    <https://github.com/fireice-uk>, <https://github.com/psychocrypt>
  * Copyright 2018      Lee Clagett <https://github.com/vtnerd>
  * Copyright 2019      Howard Chu  <https://github.com/hyc>
- * Copyright 2018-2024 SChernykh   <https://github.com/SChernykh>
- * Copyright 2016-2024 XMRig       <https://github.com/xmrig>, <support@xmrig.com>
+ * Copyright 2018-2025 SChernykh   <https://github.com/SChernykh>
+ * Copyright 2016-2025 XMRig       <https://github.com/xmrig>, <support@xmrig.com>
  *
  *   This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -155,6 +155,12 @@ bool xmrig::Job::setTarget(const char *target)
 size_t xmrig::Job::nonceOffset() const
 {
     switch (algorithm().family()) {
+    case Algorithm::RANDOM_X:
+        if (algorithm() == Algorithm::RX_WAM) {
+            return 76;
+        }
+        return 39;
+
     case Algorithm::KAWPOW:
         return 32;
 
@@ -163,6 +169,10 @@ size_t xmrig::Job::nonceOffset() const
 
     default:
         break;
+    }
+
+    if (algorithm() == Algorithm::RX_WAM) {
+        return 76;
     }
 
     if (algorithm() == Algorithm::RX_YADA) {
@@ -351,7 +361,7 @@ void xmrig::Job::setSpendSecretKey(const uint8_t *key)
 }
 
 
-void xmrig::Job::setMinerTx(const uint8_t *begin, const uint8_t *end, size_t minerTxEphPubKeyOffset, size_t minerTxPubKeyOffset, size_t minerTxExtraNonceOffset, size_t minerTxExtraNonceSize, const Buffer &minerTxMerkleTreeBranch, uint32_t minerTxMerkleTreePath, bool hasViewTag)
+void xmrig::Job::setMinerTx(const uint8_t *begin, const uint8_t *end, size_t minerTxEphPubKeyOffset, size_t minerTxPubKeyOffset, size_t minerTxExtraNonceOffset, size_t minerTxExtraNonceSize, const Buffer& minerTxMerkleTreeBranch, uint32_t minerTxMerkleTreePath, bool hasViewTag)
 {
     m_minerTxPrefix.assign(begin, end);
     m_minerTxEphPubKeyOffset    = minerTxEphPubKeyOffset;
