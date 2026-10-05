@@ -1,22 +1,23 @@
-// Copyright (c) 2026 WAM Coin developers
-// Distributed under the MIT software license, see COPYING.
-//
-// ===============================================================================
-//  rx/wam -- RandomX over Bitcoin-style 80-byte header
-// ===============================================================================
-//
-//  WAM Coin uses RandomX proof of work with a Bitcoin-style block header
-//  (80 bytes, little-endian integers) instead of Monero's blob format.
-//  This adapter implements WAM mining within xmrig's RandomX framework.
-//
-//  Key differences from standard RandomX (Monero):
-//  - Header: 80 bytes (Bitcoin format) vs. Monero blob
-//  - Nonce position: bytes 76-79 (little-endian) vs. byte 39 in Monero
-//  - Block template: pool sends coinbase parts + merkle branch (Stratum-style)
-//  - RandomX seed: rotates every 2048 blocks with 64-block lag
-//
+/* Copyright (c) 2026 WAM Coin developers
+ * Distributed under the MIT software license, see COPYING.
+ *
+ * ===============================================================================
+ *  rx/wam -- RandomX over Bitcoin-style 80-byte header
+ * ===============================================================================
+ *
+ *  WAM Coin uses RandomX proof of work with a Bitcoin-style block header
+ *  (80 bytes, little-endian integers) instead of Monero's blob format.
+ *  This adapter implements WAM mining within xmrig's RandomX framework.
+ *
+ *  Key differences from standard RandomX (Monero):
+ *  - Header: 80 bytes (Bitcoin format) vs. Monero blob
+ *  - Nonce position: bytes 76-79 (little-endian) vs. byte 39 in Monero
+ *  - Block template: pool sends coinbase parts + merkle branch (Stratum-style)
+ *  - RandomX seed: rotates every 2048 blocks with 64-block lag
+ */
 
-#pragma once
+#ifndef XMRIG_CRYPTO_RX_WAM_H
+#define XMRIG_CRYPTO_RX_WAM_H
 
 #include <cstdint>
 #include <cstring>
@@ -26,10 +27,10 @@
 
 namespace xmrig {
 
-// Type aliases for WAM-specific data
+/* Type aliases for WAM-specific data */
 using Bytes = std::vector<uint8_t>;
 
-// 256-bit target stored as 32 big-endian bytes
+/* 256-bit target stored as 32 big-endian bytes */
 struct WamTarget {
     uint8_t bytes[32];
     
@@ -38,7 +39,7 @@ struct WamTarget {
     }
 };
 
-// Byte order utilities
+/* Byte order utilities */
 inline void WriteLE32(uint8_t* p, uint32_t v) {
     p[0] = uint8_t(v);
     p[1] = uint8_t(v >> 8);
@@ -55,25 +56,25 @@ inline void PowHashToBigEndian(const uint8_t hashLE[32], uint8_t out[32]) {
     for (int i = 0; i < 32; i++) out[i] = hashLE[31 - i];
 }
 
-// WAM block template from stratum pool
+/* WAM block template from stratum pool */
 struct WamBlockTemplate {
     std::string jobId;
     uint8_t prevHash[32] = {};
-    Bytes coinb1;                          // First half of coinbase
-    Bytes coinb2;                          // Second half of coinbase
-    std::vector<std::array<uint8_t, 32>> merkleBranch;  // Merkle branch for root
+    Bytes coinb1;                          /* First half of coinbase */
+    Bytes coinb2;                          /* Second half of coinbase */
+    std::vector<std::array<uint8_t, 32>> merkleBranch;  /* Merkle branch for root */
     uint32_t version = 0;
-    uint32_t nbits = 0;  // Difficulty encoding
+    uint32_t nbits = 0;  /* Difficulty encoding */
     uint32_t ntime = 0;
-    Bytes seed;          // 32-byte RandomX key
-    Bytes extranonce1;   // Pool's nonce prefix
+    Bytes seed;          /* 32-byte RandomX key */
+    Bytes extranonce1;   /* Pool's nonce prefix */
     int extranonce2Size = 4;
     int64_t height = 0;
     bool cleanJobs = false;
     bool valid = false;
 };
 
-// Hex encoding/decoding
+/* Hex encoding/decoding */
 inline std::string ToHex(const uint8_t* data, size_t len) {
     static const char* kHex = "0123456789abcdef";
     std::string out;
@@ -108,7 +109,7 @@ inline bool ParseHex(const std::string& hex, Bytes& out) {
     return true;
 }
 
-// SHA-256 and SHA256d for merkle root computation
+/* SHA-256 and SHA256d for merkle root computation */
 class SHA256 {
 public:
     SHA256() { Reset(); }
@@ -198,7 +199,7 @@ inline void SHA256dPair(const uint8_t left[32], const uint8_t right[32], uint8_t
     SHA256d(joined, 64, out);
 }
 
-// Target utilities
+/* Target utilities */
 inline bool MeetsTarget(const uint8_t hashBE[32], const WamTarget& target) {
     return std::memcmp(hashBE, target.bytes, 32) <= 0;
 }
@@ -237,9 +238,9 @@ inline WamTarget BitsToTarget(uint32_t bits) {
     return t;
 }
 
-// Build 80-byte Bitcoin header from WAM block template
+/* Build 80-byte Bitcoin header from WAM block template */
 inline void BuildWamHeader(const WamBlockTemplate& tmpl, const Bytes& extranonce2, uint8_t header[80]) {
-    // Assemble coinbase: coinb1 | extranonce1 | extranonce2 | coinb2
+    /* Assemble coinbase: coinb1 | extranonce1 | extranonce2 | coinb2 */
     Bytes coinbase;
     coinbase.reserve(tmpl.coinb1.size() + tmpl.extranonce1.size() + extranonce2.size() + tmpl.coinb2.size());
     coinbase.insert(coinbase.end(), tmpl.coinb1.begin(), tmpl.coinb1.end());
@@ -247,7 +248,7 @@ inline void BuildWamHeader(const WamBlockTemplate& tmpl, const Bytes& extranonce
     coinbase.insert(coinbase.end(), extranonce2.begin(), extranonce2.end());
     coinbase.insert(coinbase.end(), tmpl.coinb2.begin(), tmpl.coinb2.end());
     
-    // Merkle root: SHA256d(coinbase), then fold through branch
+    /* Merkle root: SHA256d(coinbase), then fold through branch */
     uint8_t root[32];
     SHA256d(coinbase.data(), coinbase.size(), root);
     
@@ -257,21 +258,36 @@ inline void BuildWamHeader(const WamBlockTemplate& tmpl, const Bytes& extranonce
         std::memcpy(root, next, 32);
     }
     
-    // Write 80-byte header in Bitcoin format (all little-endian)
-    // Bytes 0-3: version
+    /* Write 80-byte header in Bitcoin format (all little-endian) */
+    /* Bytes 0-3: version */
     WriteLE32(header + 0, tmpl.version);
-    // Bytes 4-35: previous block hash (already in header order)
+    /* Bytes 4-35: previous block hash (already in header order) */
     std::memcpy(header + 4, tmpl.prevHash, 32);
-    // Bytes 36-67: merkle root
+    /* Bytes 36-67: merkle root */
     std::memcpy(header + 36, root, 32);
-    // Bytes 68-71: timestamp
+    /* Bytes 68-71: timestamp */
     WriteLE32(header + 68, tmpl.ntime);
-    // Bytes 72-75: difficulty bits
+    /* Bytes 72-75: difficulty bits */
     WriteLE32(header + 72, tmpl.nbits);
-    // Bytes 76-79: nonce (will be filled by miner)
+    /* Bytes 76-79: nonce (will be filled by miner) */
     WriteLE32(header + 76, 0);
 }
 
+/**
+ * @brief WAM block header encoding
+ *
+ * WAM uses Bitcoin-style 80-byte block headers for RandomX mining.
+ * This differs from Monero's approach where the nonce is at byte 39.
+ * In WAM's Bitcoin header, the nonce occupies bytes 76-79.
+ *
+ * Bitcoin header layout (80 bytes):
+ *   0-3:   version (4 bytes, little-endian)
+ *   4-35:  previous block hash (32 bytes)
+ *  36-67:  merkle root (32 bytes)
+ *  68-71:  time (4 bytes, little-endian)
+ *  72-75:  bits/difficulty (4 bytes, little-endian)
+ *  76-79:  nonce (4 bytes, little-endian) ← WAM mining happens here
+ */
 class RxWamHeader
 {
 public:
@@ -279,16 +295,27 @@ public:
     static constexpr uint32_t NONCE_OFFSET = 76;
     static constexpr uint32_t NONCE_SIZE = 4;
 
+    /**
+     * Extract nonce from Bitcoin header at bytes 76-79 (little-endian)
+     */
     static inline uint32_t getNonce(const uint8_t *header)
     {
         return *reinterpret_cast<const uint32_t*>(header + NONCE_OFFSET);
     }
 
+    /**
+     * Set nonce in Bitcoin header at bytes 76-79 (little-endian)
+     */
     static inline void setNonce(uint8_t *header, uint32_t nonce)
     {
         *reinterpret_cast<uint32_t*>(header + NONCE_OFFSET) = nonce;
     }
 
+    /**
+     * Convert stratum job to 80-byte Bitcoin header
+     * The pool sends: coinbase1, coinbase2, merkle_branch[], version, bits, time, nonce
+     * We reassemble them into a complete 80-byte header
+     */
     static bool buildHeader(
         uint8_t *header,
         uint32_t version,
@@ -302,21 +329,39 @@ public:
             return false;
         }
 
+        /* Zero out the header first */
         std::memset(header, 0, HEADER_SIZE);
+
+        /* Bytes 0-3: version (little-endian) */
         *reinterpret_cast<uint32_t*>(header + 0) = version;
+
+        /* Bytes 4-35: previous block hash (32 bytes, as-is from stratum) */
         std::memcpy(header + 4, prevBlockHash, 32);
+
+        /* Bytes 36-67: merkle root (32 bytes, as-is from stratum) */
         std::memcpy(header + 36, merkleRoot, 32);
+
+        /* Bytes 68-71: time (little-endian) */
         *reinterpret_cast<uint32_t*>(header + 68) = time;
+
+        /* Bytes 72-75: bits/difficulty (little-endian) */
         *reinterpret_cast<uint32_t*>(header + 72) = bits;
+
+        /* Bytes 76-79: nonce (little-endian) */
         *reinterpret_cast<uint32_t*>(header + 76) = nonce;
 
         return true;
     }
 
+    /**
+     * Verify header structure is sound
+     */
     static inline bool isValid(const uint8_t *header)
     {
         return header != nullptr;
     }
 };
 
-} // namespace xmrig
+} /* namespace xmrig */
+
+#endif /* XMRIG_CRYPTO_RX_WAM_H */

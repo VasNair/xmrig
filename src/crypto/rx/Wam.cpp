@@ -1,9 +1,10 @@
-// Copyright (c) 2026 WAM Coin developers
-// Distributed under the MIT software license, see COPYING.
-//
-// ===========================================================================
-//  rx/wam -- SHA-256 transform implementation
-// ===========================================================================
+/* Copyright (c) 2026 WAM Coin developers
+ * Distributed under the MIT software license, see COPYING.
+ *
+ * ===============================================================================
+ *  rx/wam -- SHA-256 transform implementation
+ * ===============================================================================
+ */
 
 #include "Wam.h"
 
@@ -54,4 +55,4 @@ void SHA256::Transform(const uint8_t* chunk) {
     m_h[4] += e; m_h[5] += f; m_h[6] += g; m_h[7] += h;
 }
 
-} // namespace xmrig
+} /* namespace xmrig */
