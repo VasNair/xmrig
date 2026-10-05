@@ -1,9 +1,9 @@
 // Copyright (c) 2026 WAM Coin developers
 // Distributed under the MIT software license, see COPYING.
 //
-// ===========================================================================
+// ===============================================================================
 //  rx/wam -- RandomX over Bitcoin-style 80-byte header
-// ===========================================================================
+// ===============================================================================
 //
 //  WAM Coin uses RandomX proof of work with a Bitcoin-style block header
 //  (80 bytes, little-endian integers) instead of Monero's blob format.
@@ -271,5 +271,52 @@ inline void BuildWamHeader(const WamBlockTemplate& tmpl, const Bytes& extranonce
     // Bytes 76-79: nonce (will be filled by miner)
     WriteLE32(header + 76, 0);
 }
+
+class RxWamHeader
+{
+public:
+    static constexpr uint32_t HEADER_SIZE = 80;
+    static constexpr uint32_t NONCE_OFFSET = 76;
+    static constexpr uint32_t NONCE_SIZE = 4;
+
+    static inline uint32_t getNonce(const uint8_t *header)
+    {
+        return *reinterpret_cast<const uint32_t*>(header + NONCE_OFFSET);
+    }
+
+    static inline void setNonce(uint8_t *header, uint32_t nonce)
+    {
+        *reinterpret_cast<uint32_t*>(header + NONCE_OFFSET) = nonce;
+    }
+
+    static bool buildHeader(
+        uint8_t *header,
+        uint32_t version,
+        const uint8_t *prevBlockHash,
+        const uint8_t *merkleRoot,
+        uint32_t time,
+        uint32_t bits,
+        uint32_t nonce)
+    {
+        if (!header || !prevBlockHash || !merkleRoot) {
+            return false;
+        }
+
+        std::memset(header, 0, HEADER_SIZE);
+        *reinterpret_cast<uint32_t*>(header + 0) = version;
+        std::memcpy(header + 4, prevBlockHash, 32);
+        std::memcpy(header + 36, merkleRoot, 32);
+        *reinterpret_cast<uint32_t*>(header + 68) = time;
+        *reinterpret_cast<uint32_t*>(header + 72) = bits;
+        *reinterpret_cast<uint32_t*>(header + 76) = nonce;
+
+        return true;
+    }
+
+    static inline bool isValid(const uint8_t *header)
+    {
+        return header != nullptr;
+    }
+};
 
 } // namespace xmrig
