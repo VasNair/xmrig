@@ -21,6 +21,8 @@
 #define XMRIG_WAM_CLIENT_H
 
 #include "base/net/stratum/Client.h"
+#include <vector>
+#include <cstdint>
 
 namespace xmrig {
 
@@ -48,6 +50,10 @@ namespace xmrig {
  *
  * This client parses the WAM job format and constructs the 80-byte Bitcoin
  * header that workers will use as the RandomX input.
+ *
+ * CRITICAL: The merkle root (bytes 36-67 of header) must be recomputed fresh
+ * for each extranonce2, because extranonce2 varies the coinbase, which changes
+ * its hash, which cascades through the merkle tree. This is done in buildHeader().
  */
 class WamClient : public Client
 {
@@ -56,6 +62,14 @@ public:
 
 protected:
     bool parseJob(const rapidjson::Value& params, int* code) override;
+
+private:
+    // Stored from mining.notify for merkle root computation
+    std::vector<std::vector<uint8_t>> m_merkle_branch;
+    std::vector<uint8_t> m_coinb1;
+    std::vector<uint8_t> m_coinb2;
+    std::vector<uint8_t> m_extranonce1;
+    size_t m_extranonce2_size = 0;
 };
 
 } /* namespace xmrig */
