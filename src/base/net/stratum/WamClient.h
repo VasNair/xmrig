@@ -30,13 +30,24 @@ namespace xmrig {
  * WAM is a Bitcoin Core fork using RandomX proof of work. Its stratum protocol
  * is bitcoin-shaped, not Monero-shaped:
  *
- *   - mining.notify carries coinbase halves, merkle branch, and header fields
- *   - The RandomX seed is in mining.notify[9] (WAM extension)
+ *   - mining.notify carries:
+ *     [0] job_id
+ *     [1] prevhash (big-endian block hash)
+ *     [2] coinb1 (hex, first half of coinbase)
+ *     [3] coinb2 (hex, second half of coinbase)
+ *     [4] merkle_branch (array of 32-byte hashes)
+ *     [5] version (big-endian hex)
+ *     [6] bits/nbits (big-endian hex)
+ *     [7] ntime (big-endian hex)
+ *     [8] clean_jobs (boolean)
+ *     [9] randomx_seed (hex, little-endian - WAM extension)
+ *
  *   - The miner assembles an 80-byte Bitcoin header and hashes it with RandomX
  *   - The nonce is at bytes 76-79 of the header
+ *   - The RandomX seed is passed as mining.notify[9]
  *
- * This client handles the WAM-specific job format and passes it to the workers
- * as a properly-formed 80-byte Bitcoin header.
+ * This client parses the WAM job format and constructs the 80-byte Bitcoin
+ * header that workers will use as the RandomX input.
  */
 class WamClient : public Client
 {
@@ -45,9 +56,6 @@ public:
 
 protected:
     bool parseJob(const rapidjson::Value& params, int* code) override;
-
-private:
-    void buildWamHeader();
 };
 
 } /* namespace xmrig */
